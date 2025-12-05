@@ -62,7 +62,15 @@ def lang_keyboard():
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_ids.add(update.effective_user.id)
-    await update.message.reply_text("👋 Обери мову перекладу", reply_markup=lang_keyboard())
+    user_id = update.effective_user.id
+    is_admin = "✅ ТАК" if user_id in ADMIN_IDS else "❌ НІ"
+    await update.message.reply_text(
+        f"👋 Обери мову перекладу\n\n"
+        f"🆔 Твій ID: `{user_id}`\n"
+        f"👑 Адмін: {is_admin}",
+        reply_markup=lang_keyboard(),
+        parse_mode="Markdown"
+    )
 
 async def set_lang(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
