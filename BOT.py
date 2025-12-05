@@ -70,8 +70,18 @@ def lang_keyboard():
     return InlineKeyboardMarkup(rows)
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_ids.add(update.effective_user.id)
+    """Старт бота в приваті: показує ID і зберігає його для розсилок/алярму."""
     user_id = update.effective_user.id
+    user_ids.add(user_id)
+
+    # Додаємо користувача в список алярму для основної групи
+    if MAIN_GROUP_ID not in group_members:
+        group_members[MAIN_GROUP_ID] = set()
+    if user_id not in group_members[MAIN_GROUP_ID]:
+        group_members[MAIN_GROUP_ID].add(user_id)
+        save_groups()
+        logger.info(f"➕ /start: додано user_id={user_id} до MAIN_GROUP_ID={MAIN_GROUP_ID}")
+
     is_admin = "✅ ТАК" if user_id in ADMIN_IDS else "❌ НІ"
     await update.message.reply_text(
         f"👋 Обери мову перекладу\n\n"
@@ -160,6 +170,10 @@ async def track_group_member(update: Update, context: ContextTypes.DEFAULT_TYPE)
     if update.effective_chat.type in ["group", "supergroup"]:
         chat_id = update.effective_chat.id
         user_id = update.effective_user.id
+
+        # Ігноруємо ботів (включно з самим ботом)
+        if update.effective_user is not None and update.effective_user.is_bot:
+            return
         
         if chat_id not in group_members:
             group_members[chat_id] = set()
@@ -198,9 +212,12 @@ async def setup_alarm_button(update: Update, context: ContextTypes.DEFAULT_TYPE)
         logger.warning(f"❌ /setalarm з непідтримуваного типу чату: {chat_type}")
         return
 
-    keyboard = InlineKeyboardMarkup([[
-        InlineKeyboardButton("🍆 Смикнути за пісюн", callback_data="alarm_pull")
-    ]])
+    alarm_keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("🍆 Смикнути за пісюн", callback_data="alarm_pull")]
+    ])
+    share_keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("📲 Поділитись ID з адміном", callback_data="share_id")]
+    ])
 
     # Відправляємо з локальним файлом у target_chat_id
     try:
@@ -211,7 +228,7 @@ async def setup_alarm_button(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 caption="**Смикнути за пісюн 🍆**\n\n"
                         "Натисни якщо треба НЕГАЙНО зібрати всіх.\n"
                         "Всі юзери отримають алярм в приват.",
-                reply_markup=keyboard,
+                reply_markup=alarm_keyboard,
                 parse_mode="Markdown"
             )
     except FileNotFoundError:
@@ -221,7 +238,7 @@ async def setup_alarm_button(update: Update, context: ContextTypes.DEFAULT_TYPE)
             text="**Смикнути за пісюн 🍆**\n\n"
                  "Натисни якщо треба НЕГАЙНО зібрати всіх.\n"
                  "Всі юзери отримають алярм в приват.",
-            reply_markup=keyboard,
+            reply_markup=alarm_keyboard,
             parse_mode="Markdown"
         )
 
@@ -240,6 +257,13 @@ async def setup_alarm_button(update: Update, context: ContextTypes.DEFAULT_TYPE)
             "⚠️ Кнопку створено, але не вдалось закріпити.\n"
             "Перевір, що бот має права адміна в цій групі."
         )
+
+    # Окреме незакріплене повідомлення з кнопкою поділитися ID
+    await context.bot.send_message(
+        chat_id=target_chat_id,
+        text="📲 Натисни, щоб поділитись своїм ID для алярмів (щоб бот міг написати тобі в приват):",
+        reply_markup=share_keyboard
+    )
 
 async def handle_alarm(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обробка натискання на кнопку алярму"""
@@ -291,8 +315,8 @@ async def handle_alarm(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     logger.info(f"📨 Починаємо розсилку алярму в {len(members)} учасників...")
     for uid in members:
-        # Не слати тому хто натиснув
-        if uid == user.id:
+        # Не слати тільки боту самому собі
+        if uid == context.bot.id:
             continue
             
         try:
@@ -315,7 +339,7 @@ async def handle_alarm(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     # Друга хвиля
     for uid in members:
-        if uid == user.id:
+        if uid == context.bot.id:
             continue
         try:
             await context.bot.send_message(
@@ -334,6 +358,101 @@ async def handle_alarm(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"📨 Успішно: {success}\n"
         f"❌ Не доставлено: {failed}\n"
         f"🔁 Повтор відправлено через 10 сек"
+    )
+
+async def share_id_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Кнопка в групі: користувач ділиться своїм ID для алярму."""
+    query = update.callback_query
+    await query.answer("✅ Твій ID збережено для алярмів", show_alert=False)
+
+    chat_id = query.message.chat_id
+    user = query.from_user
+    user_id = user.id
+
+    # Пишемо саме в цю групу (наприклад, MAIN_GROUP_ID)
+    if chat_id not in group_members:
+        group_members[chat_id] = set()
+
+    if user_id not in group_members[chat_id]:
+        group_members[chat_id].add(user_id)
+        user_ids.add(user_id)
+        save_groups()
+        logger.info(f"📲 share_id: додано user_id={user_id} до chat_id={chat_id}")
+    else:
+        logger.info(f"📲 share_id: user_id={user_id} вже був у chat_id={chat_id}")
+
+async def add_alarm_ids(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Адмінська команда: додати вручну user_id до основної групи алярму.
+
+    Викликати в ПРИВАТІ з ботом:
+      /addids 111111111 222222222 333333333
+    """
+    user_id = update.effective_user.id
+    chat_type = update.effective_chat.type
+
+    if user_id not in ADMIN_IDS:
+        await update.message.reply_text("⛔ Тільки адмін може додавати ID")
+        return
+
+    if chat_type != "private":
+        await update.message.reply_text("✉️ Напиши цю команду боту в приваті.")
+        return
+
+    parts = (update.message.text or "").split()
+    # parts[0] = /addids, далі мають бути числа
+    raw_ids = parts[1:]
+    if not raw_ids:
+        await update.message.reply_text("❗ Формат: `/addids 111111111 222222222`", parse_mode="Markdown")
+        return
+
+    added = 0
+    skipped = 0
+    errors = 0
+
+    if MAIN_GROUP_ID not in group_members:
+        group_members[MAIN_GROUP_ID] = set()
+
+    for rid in raw_ids:
+        try:
+            uid = int(rid)
+        except ValueError:
+            errors += 1
+            continue
+
+        if uid in group_members[MAIN_GROUP_ID]:
+            skipped += 1
+            continue
+
+        group_members[MAIN_GROUP_ID].add(uid)
+        added += 1
+
+    save_groups()
+
+    total = len(group_members[MAIN_GROUP_ID])
+    await update.message.reply_text(
+        f"✅ Додано: {added}\n"
+        f"↪️ Вже були: {skipped}\n"
+        f"⚠️ Помилки парсу: {errors}\n"
+        f"📋 Всього в групі {MAIN_GROUP_ID}: {total} ID"
+    )
+
+async def list_alarm_ids(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Показати, які ID зараз підписані на алярм у MAIN_GROUP_ID (для адміна)."""
+    user_id = update.effective_user.id
+    if user_id not in ADMIN_IDS:
+        await update.message.reply_text("⛔ Тільки адмін")
+        return
+
+    members = sorted(group_members.get(MAIN_GROUP_ID, set()))
+    if not members:
+        await update.message.reply_text(f"Поки немає жодного ID для групи {MAIN_GROUP_ID}.")
+        return
+
+    ids_str = "\n".join(str(x) for x in members)
+    await update.message.reply_text(
+        f"📋 ID для групи {MAIN_GROUP_ID} (усього {len(members)}):\n\n"
+        f"`{ids_str}`",
+        parse_mode="Markdown"
     )
 
 def translate_text(text, target_lang):
@@ -374,7 +493,10 @@ def main():
     # НОВІ ХЕНДЛЕРИ ДЛЯ АЛЯРМУ
     app.add_handler(CommandHandler("setalarm", setup_alarm_button))
     app.add_handler(CallbackQueryHandler(handle_alarm, pattern="^alarm_pull$"))
-    logger.info("🔔 Хендлери алярму додано")
+    app.add_handler(CallbackQueryHandler(share_id_callback, pattern="^share_id$"))
+    app.add_handler(CommandHandler("addids", add_alarm_ids))
+    app.add_handler(CommandHandler("listids", list_alarm_ids))
+    logger.info("🔔 Хендлери алярму, share-ID та керування ID додано")
     
     # Трекінг має бути ОСТАННІМ
     app.add_handler(MessageHandler(
