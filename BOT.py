@@ -8,6 +8,14 @@ import os
 import asyncio
 import json
 import time
+import logging
+
+# Налаштування логування
+logging.basicConfig(
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    level=logging.INFO
+)
+logger = logging.getLogger(__name__)
 
 DEEPL_API_KEY = "737c3530-bd62-499e-b8e3-c7e014b9bd27:fx"
 BOT_TOKEN = "7768654352:AAF2xXvEySl-_Uet5KuYQIkNucUxfQyzMyo"
@@ -161,14 +169,19 @@ async def track_group_member(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
 async def setup_alarm_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Команда /setalarm - створює закріплене повідомлення з кнопкою"""
+    user_id = update.effective_user.id
+    chat_id = update.effective_chat.id
+    logger.info(f"🔔 /setalarm від user_id={user_id} в chat_id={chat_id}")
     
     if update.effective_chat.type not in ["group", "supergroup"]:
         await update.message.reply_text("❌ Тільки для груп")
+        logger.warning(f"❌ Спроба встановити алярм не в групі")
         return
     
     # Тільки адмін
-    if update.effective_user.id not in ADMIN_IDS:
+    if user_id not in ADMIN_IDS:
         await update.message.reply_text("⛔ Тільки адмін може встановити")
+        logger.warning(f"⛔ Неадмін {user_id} спробував встановити алярм. ADMIN_IDS={ADMIN_IDS}")
         return
     
     keyboard = InlineKeyboardMarkup([[
@@ -218,12 +231,14 @@ async def handle_alarm(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     chat_id = query.message.chat_id
     user = query.from_user
+    logger.info(f"🚨 АЛЯРМ! Натиснув {user.id} ({user.first_name}) в групі {chat_id}")
     
     # Антиспам: не частіше ніж раз на 60 секунд
     now = time.time()
     if chat_id in last_alarm_time:
         if now - last_alarm_time[chat_id] < 60:
             remaining = int(60 - (now - last_alarm_time[chat_id]))
+            logger.info(f"⏳ Антиспам: {remaining} секунд залишилось")
             await query.answer(
                 f"⏳ Зачекай {remaining} сек перед наступним алярмом", 
                 show_alert=True
@@ -234,6 +249,7 @@ async def handle_alarm(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     # Дістаємо членів цієї групи
     members = group_members.get(chat_id, set())
+    logger.info(f"👥 Знайдено {len(members)} учасників групи")
     
     if not members:
         await query.answer(
@@ -256,6 +272,7 @@ async def handle_alarm(update: Update, context: ContextTypes.DEFAULT_TYPE):
     success = 0
     failed = 0
     
+    logger.info(f"📨 Починаємо розсилку алярму в {len(members)} учасників...")
     for uid in members:
         # Не слати тому хто натиснув
         if uid == user.id:
@@ -273,8 +290,11 @@ async def handle_alarm(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception as e:
             failed += 1
     
+    logger.info(f"✅ Перша хвиля: успішно={success}, помилки={failed}")
+    
     # Чекаємо 10 секунд
     await asyncio.sleep(10)
+    logger.info(f"🔁 Відправляємо другу хвилю...")
     
     # Друга хвиля
     for uid in members:
@@ -311,9 +331,13 @@ def translate_text(text, target_lang):
     return response.json()["translations"][0]["text"]
 
 def main():
+    logger.info("🚀 Бот запускається...")
+    
     load_groups()  # завантажуємо збережені групи
+    logger.info(f"📋 Завантажено {len(group_members)} груп з {sum(len(m) for m in group_members.values())} учасників")
     
     app = Application.builder().token(BOT_TOKEN).build()
+    logger.info("✅ Application створено")
     
     broadcast_conv = ConversationHandler(
         entry_points=[CommandHandler("broadcast", start_broadcast)],
@@ -328,17 +352,21 @@ def main():
     app.add_handler(CallbackQueryHandler(set_lang, pattern="^lang_"))
     app.add_handler(CallbackQueryHandler(translate_callback, pattern="^translate_"))
     app.add_handler(MessageHandler(filters.TEXT & filters.ChatType.GROUPS, handle_message))
+    logger.info("📝 Базові хендлери додано")
     
     # НОВІ ХЕНДЛЕРИ ДЛЯ АЛЯРМУ
     app.add_handler(CommandHandler("setalarm", setup_alarm_button))
     app.add_handler(CallbackQueryHandler(handle_alarm, pattern="^alarm_pull$"))
+    logger.info("🔔 Хендлери алярму додано")
     
     # Трекінг має бути ОСТАННІМ
     app.add_handler(MessageHandler(
         filters.ChatType.GROUPS & filters.ALL, 
         track_group_member
     ))
+    logger.info("👥 Трекінг учасників груп активовано")
     
+    logger.info("🏃 Запускаємо polling...")
     app.run_polling()
 
 if __name__ == "__main__":
