@@ -20,6 +20,7 @@ logger = logging.getLogger(__name__)
 DEEPL_API_KEY = "737c3530-bd62-499e-b8e3-c7e014b9bd27:fx"
 BOT_TOKEN = "7768654352:AAF2xXvEySl-_Uet5KuYQIkNucUxfQyzMyo"
 ADMIN_IDS = [5356793174, 839685195]  # адміни бота
+MAIN_GROUP_ID = -1002847113092      # основна група для алярму
 
 user_lang = {}  # user_id -> lang_code
 user_ids = set()  # всі юзери
@@ -168,31 +169,44 @@ async def track_group_member(update: Update, context: ContextTypes.DEFAULT_TYPE)
         save_groups()
 
 async def setup_alarm_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Команда /setalarm - створює закріплене повідомлення з кнопкою"""
+    """Команда /setalarm - створює закріплене повідомлення з кнопкою.
+
+    Працює:
+      - у приваті з ботом: тоді бот ставить кнопку в MAIN_GROUP_ID
+      - у групі: тоді ставить кнопку в цю групу
+    """
     user_id = update.effective_user.id
     chat_id = update.effective_chat.id
-    logger.info(f"🔔 /setalarm від user_id={user_id} в chat_id={chat_id}")
-    
-    if update.effective_chat.type not in ["group", "supergroup"]:
-        await update.message.reply_text("❌ Тільки для груп")
-        logger.warning(f"❌ Спроба встановити алярм не в групі")
-        return
-    
-    # Тільки адмін
+    chat_type = update.effective_chat.type
+    logger.info(f"🔔 /setalarm від user_id={user_id} в chat_id={chat_id}, type={chat_type}")
+
+    # Тільки адмін бота
     if user_id not in ADMIN_IDS:
         await update.message.reply_text("⛔ Тільки адмін може встановити")
         logger.warning(f"⛔ Неадмін {user_id} спробував встановити алярм. ADMIN_IDS={ADMIN_IDS}")
         return
-    
+
+    # Куди відправляти кнопку
+    if chat_type == "private":
+        target_chat_id = MAIN_GROUP_ID
+        logger.info(f"🎯 Ставитимемо кнопку в основну групу {MAIN_GROUP_ID}")
+    elif chat_type in ["group", "supergroup"]:
+        target_chat_id = chat_id
+        logger.info(f"🎯 Ставитимемо кнопку в поточну групу {chat_id}")
+    else:
+        await update.message.reply_text("❌ Працює тільки в приваті з ботом або в групі")
+        logger.warning(f"❌ /setalarm з непідтримуваного типу чату: {chat_type}")
+        return
+
     keyboard = InlineKeyboardMarkup([[
         InlineKeyboardButton("🍆 Смикнути за пісюн", callback_data="alarm_pull")
     ]])
-    
-    # Відправляємо з локальним файлом
+
+    # Відправляємо з локальним файлом у target_chat_id
     try:
         with open("alarm_button.jpg", "rb") as photo:
             msg = await context.bot.send_photo(
-                chat_id=update.effective_chat.id,
+                chat_id=target_chat_id,
                 photo=photo,
                 caption="**Смикнути за пісюн 🍆**\n\n"
                         "Натисни якщо треба НЕГАЙНО зібрати всіх.\n"
@@ -202,26 +216,29 @@ async def setup_alarm_button(update: Update, context: ContextTypes.DEFAULT_TYPE)
             )
     except FileNotFoundError:
         # Якщо файл не знайдено - без картинки
-        msg = await update.message.reply_text(
-            "**Смикнути за пісюн 🍆**\n\n"
-            "Натисни якщо треба НЕГАЙНО зібрати всіх.\n"
-            "Всі юзери отримають алярм в приват.",
+        msg = await context.bot.send_message(
+            chat_id=target_chat_id,
+            text="**Смикнути за пісюн 🍆**\n\n"
+                 "Натисни якщо треба НЕГАЙНО зібрати всіх.\n"
+                 "Всі юзери отримають алярм в приват.",
             reply_markup=keyboard,
             parse_mode="Markdown"
         )
-    
-    # Закріплюємо
+
+    # Закріплюємо в групі
     try:
         await context.bot.pin_chat_message(
-            chat_id=update.effective_chat.id,
+            chat_id=target_chat_id,
             message_id=msg.message_id,
             disable_notification=True
         )
-        await update.message.reply_text("✅ Кнопку встановлено і закріплено")
+        # Відповідь там, де адмін викликав команду
+        await update.message.reply_text("✅ Кнопку встановлено і закріплено в групі")
     except Exception as e:
+        logger.warning(f"⚠️ Не вдалось закріпити повідомлення: {e}")
         await update.message.reply_text(
-            f"⚠️ Кнопку створено, але не вдалось закріпити.\n"
-            f"Дай боту права адміна в групі."
+            "⚠️ Кнопку створено, але не вдалось закріпити.\n"
+            "Перевір, що бот має права адміна в цій групі."
         )
 
 async def handle_alarm(update: Update, context: ContextTypes.DEFAULT_TYPE):
