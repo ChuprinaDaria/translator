@@ -381,6 +381,46 @@ async def share_id_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         logger.info(f"📲 share_id: user_id={user_id} вже був у chat_id={chat_id}")
 
+async def send_share_id_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Адмінська команда: надіслати в групу кнопку '📲 Поділитись ID з адміном'.
+
+    Працює:
+      - у приваті з ботом: кнопка піде в MAIN_GROUP_ID
+      - у групі: кнопка піде в цю групу
+    """
+    user_id = update.effective_user.id
+    chat_id = update.effective_chat.id
+    chat_type = update.effective_chat.type
+
+    if user_id not in ADMIN_IDS:
+        await update.message.reply_text("⛔ Тільки адмін може відправляти цю кнопку")
+        return
+
+    if chat_type == "private":
+        target_chat_id = MAIN_GROUP_ID
+        logger.info(f"📲 /shareidbtn з приватного чату, шлемо в MAIN_GROUP_ID={MAIN_GROUP_ID}")
+    elif chat_type in ["group", "supergroup"]:
+        target_chat_id = chat_id
+        logger.info(f"📲 /shareidbtn у групі {chat_id}")
+    else:
+        await update.message.reply_text("❌ Працює тільки в приваті з ботом або в групі")
+        return
+
+    share_keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("📲 Поділитись ID з адміном", callback_data="share_id")]
+    ])
+
+    await context.bot.send_message(
+        chat_id=target_chat_id,
+        text="📲 Натисни, щоб поділитись своїм ID для алярмів (щоб бот міг написати тобі в приват):",
+        reply_markup=share_keyboard
+    )
+
+    if chat_type == "private":
+        await update.message.reply_text("✅ Кнопку 'Поділитись ID' відправлено в групу")
+    else:
+        await update.message.reply_text("✅ Кнопку 'Поділитись ID' відправлено в цей чат")
+
 async def add_alarm_ids(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Адмінська команда: додати вручну user_id до основної групи алярму.
 
@@ -494,6 +534,7 @@ def main():
     app.add_handler(CommandHandler("setalarm", setup_alarm_button))
     app.add_handler(CallbackQueryHandler(handle_alarm, pattern="^alarm_pull$"))
     app.add_handler(CallbackQueryHandler(share_id_callback, pattern="^share_id$"))
+    app.add_handler(CommandHandler("shareidbtn", send_share_id_button))
     app.add_handler(CommandHandler("addids", add_alarm_ids))
     app.add_handler(CommandHandler("listids", list_alarm_ids))
     logger.info("🔔 Хендлери алярму, share-ID та керування ID додано")
